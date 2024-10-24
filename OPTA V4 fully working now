@@ -1,0 +1,179 @@
+#include "OptaBlue.h"
+
+using namespace Opta;
+
+DigitalStSolidExpansion stsolidExp;  // Updated for solid-state digital expansion
+
+/*------------------------ DUMP VALVE OPERATION ------------------------*/
+
+bool dumpValveOperate() {
+  if (digitalRead(A2) == HIGH) {
+    digitalWrite(D0, HIGH);  // Close valve
+  } else {
+    digitalWrite(D0, LOW);   // Open valve
+  }
+  return true;
+}
+
+/*-------------------------- FILL VALVE OPERATION -----------------------*/
+
+bool fillValveOperate() {
+  if (digitalRead(A3) == HIGH) {
+    digitalWrite(D1, HIGH);  // Open valve
+  } else {
+    digitalWrite(D1, LOW);   // Close valve
+  }
+  return true;
+}
+
+/*------------------------ FIRE VALVE OPERATION -------------------------*/
+
+bool fireValveOperate() {
+
+    optaInterlockCheck();
+
+  // Check if the fire button is pressed
+  if (digitalRead(A0) == HIGH) {
+
+    // Immediately fire Relay 1 and Relay 2 (solid-state relays)
+    stsolidExp.digitalWrite(0, HIGH);  // Relay 1
+    stsolidExp.digitalWrite(1, HIGH);  // Relay 2
+
+    // Update the expansion module to apply changes
+    stsolidExp.updateDigitalOutputs();
+
+    // Wait for 3700ms before firing solenoid and Relay 3
+    delay(3700);
+
+    // Fire solenoid D2 and Relay 3 at the same time
+    digitalWrite(D2, HIGH);   // Activate firing solenoid
+    stsolidExp.digitalWrite(2, HIGH);  // Relay 3
+
+    // Update the expansion module again to apply changes
+    stsolidExp.updateDigitalOutputs();
+
+    // Assuming the sounder is activated here
+    delay(7000);  // Keep solenoid and Relay 3 active for 7 seconds
+
+    // Turn off solenoid and Relay 3
+    digitalWrite(D2, LOW);    // Deactivate firing solenoid
+    stsolidExp.digitalWrite(2, LOW);   // Turn off Relay 3
+
+    // Update the expansion module one last time
+    stsolidExp.updateDigitalOutputs();
+
+    return true;  // Return true after successful operation
+  } else {
+    return false;  // Return false if the fire button is not pressed
+  }
+}
+
+/*--------------------- CHECK INTERLOCKS STATUS OPTA --------------------*/
+
+bool optaInterlockCheck() {
+  if (digitalRead(A1) == HIGH) {
+    digitalWrite(D3, HIGH);  // Activate valve on D3 when pressure is ready
+    return true;             // Pressure ready
+  } else {
+    digitalWrite(D3, LOW);   // Deactivate valve on D3 when pressure is not ready
+    return false;            // Pressure not ready
+  }
+}
+
+/*---------------------- SAFE SYSTEM LED USER INDICATION ----------------*/
+
+void sysSafeToUser() {
+  if (optaInterlockCheck()) {
+    digitalWrite(D3, HIGH);  // Turn on Green LED
+  } else {
+    digitalWrite(D3, LOW);   // Turn off Green LED
+  }
+}
+
+/*----------------------- PRESSURE READY TO FIRE ------------------------*/
+
+bool pressureReadyFire() {
+  if (digitalRead(A4) == HIGH) {
+    return true;  // Pressure ready
+  } else {
+    return false;  // Pressure not ready
+  }
+}
+
+/*----------------------------------------------------------------------*/
+
+void setup() {
+  // Set the initial state of D2 (firing solenoid) to LOW right at the start
+  digitalWrite(D2, LOW);
+
+  // Set the pin modes for the base unit
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
+  pinMode(A2, INPUT);
+  pinMode(A3, INPUT);
+  pinMode(A4, INPUT);
+  pinMode(A5, INPUT);  // Add this line for the purge button
+
+  pinMode(D0, OUTPUT);
+  pinMode(D1, OUTPUT);
+  pinMode(D2, OUTPUT);  // Set D2 as OUTPUT after setting it LOW
+  pinMode(D3, OUTPUT);
+  //pinMode(D4, OUTPUT);  // Ensure D4 is set as OUTPUT
+
+  // Ensure all outputs are initially off (already done for D2 above)
+  digitalWrite(D0, LOW);
+  digitalWrite(D1, LOW);
+  digitalWrite(D3, LOW);
+  //digitalWrite(D4, LOW);  // Set initial state of D4 to LOW
+
+  // Initialize the solid-state expansion module at index 0
+  OptaController.begin();
+  stsolidExp = OptaController.getExpansion(0);
+
+  // Set expansion module outputs to LOW initially
+  stsolidExp.digitalWrite(0, LOW);  // Relay 1
+  stsolidExp.digitalWrite(1, LOW);  // Relay 2
+  stsolidExp.digitalWrite(2, LOW);  // Relay 3
+
+  // Update the expansion module to apply changes
+  stsolidExp.updateDigitalOutputs();
+}
+
+
+
+void loop() {
+  sysSafeToUser();
+
+  while (optaInterlockCheck()) {
+    // Outer loop continues as long as optaInterlockCheck() returns true
+
+    // Nested while loop
+    while (!pressureReadyFire()) {
+
+      optaInterlockCheck();
+
+      // Execute dump & fill valve operation before checking other conditions
+      dumpValveOperate();
+      fillValveOperate();
+
+      // Operate dump valve as long as the button is pressed
+      while (digitalRead(A5) == HIGH) {
+        digitalWrite(D0, LOW);
+        delay (100);
+      }
+
+    }
+
+    // Check if the system is ready to fire
+    if (pressureReadyFire()) {
+      dumpValveOperate();
+      fillValveOperate();
+      fireValveOperate();  // Call the adjusted fire operation
+      delay(100);
+    }
+
+    delay(100);  // Small delay to prevent the loop from running too fast
+  }
+
+  delay(100);  // Delay between each main loop iteration
+}

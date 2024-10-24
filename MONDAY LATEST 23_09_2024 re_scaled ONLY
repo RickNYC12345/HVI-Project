@@ -1,0 +1,339 @@
+local a = "hello"
+local b = false
+local c = false
+local d = false
+local e = 0
+local f = nil
+local g = 2000
+
+collectgarbage("setpause", 100)
+collectgarbage("setstepmul", 500)
+
+MB.writeName("LUA_NO_WARN_TRUNCATION", 1)
+MB.writeName("ASYNCH_ENABLE", 0)
+MB.writeName("ASYNCH_TX_DIONUM", 14)
+MB.writeName("ASYNCH_RX_DIONUM", 15)
+MB.writeName("ASYNCH_BAUD", 9600)
+MB.writeName("ASYNCH_RX_BUFFER_SIZE_BYTES", 200)
+MB.writeName("ASYNCH_NUM_DATA_BITS", 8)
+MB.writeName("ASYNCH_NUM_STOP_BITS", 1)
+MB.writeName("ASYNCH_PARITY", 0)
+MB.writeName("ASYNCH_ENABLE", 1)
+
+-- Utility functions
+local function readAnalogInput(channel)
+    local value = MB.R(channel, 3)
+    if value == nil then
+        return 0
+    end
+    return value
+end
+
+local function writeDigitalOutput(channel, value)
+    MB.W(channel, 0, value)
+end
+
+local function waitForDigitalInput(channel, timeout)
+    local startTime = LJ.Tick()
+    while (LJ.Tick() - startTime) < timeout do
+        if MB.R(channel, 0) == 1 then
+            return true
+        end
+    end
+    return false
+end
+
+local function UART_Transmit_ASCII(a, address)
+    local tx = {}
+    tx[#tx + 1] = string.byte('#') -- Start delimiter
+    tx[#tx + 1] = address
+    for i = 1, a:len() do
+        tx[#tx + 1] = string.byte(a:sub(i, i))
+    end
+    tx[#tx + 1] = string.byte('\n') -- End of message
+    MB.writeName("ASYNCH_NUM_BYTES_TX", #tx)
+    MB.writeNameArray("ASYNCH_DATA_TX", #tx, tx)
+    MB.writeName("ASYNCH_TX_GO", 1)
+    LJ.IntervalConfig(1, 1600) -- 1600ms delay
+    while LJ.CheckInterval(1) == 0 do end
+end
+
+local function fbtnP()
+    return MB.R(2002, 0) == 1
+end
+
+local function rstT()
+    return fbtnP()
+end
+
+local function timeout()
+    if fbtnP() then
+        if f == nil then
+            f = LJ.Tick()
+        elseif LJ.Tick() - f >= g then
+            d = true
+            writeDigitalOutput(2008, 0)
+        end
+    else
+        f = nil
+        d = false
+    end
+    return d
+end
+
+local function safetyCheck()
+    writeDigitalOutput(2013, 1)
+    return true
+end
+
+local function isReadyToFire()
+    return MB.R(2016, 0) == 1
+end
+
+local function readSP(channel)
+    return readAnalogInput(channel)
+end
+
+local function readPP()
+    return readAnalogInput(4)
+end
+
+local function userSetsP()
+    local V_MIN = 0
+    local V_MAX = 5
+    local PRESSURE_MIN = 0
+    local PRESSURE_MAX = 145
+    local theSetP = 0.00
+    LJ.IntervalConfig(0, 3600)
+
+    local function calculatePressure(voltage, v_min, v_max)
+        return ((voltage - v_min) / (v_max - v_min)) * (PRESSURE_MAX - PRESSURE_MIN)
+    end
+
+    while fbtnP() do
+        LJ.IntervalConfig(2, 100)
+        while LJ.CheckInterval(2) == 0 do end
+    end
+
+    UART_Transmit_ASCII("CLEAR_LCD", 0x27)
+    LJ.IntervalConfig(1, 500)
+    while LJ.CheckInterval(1) == 0 do end
+
+    while not fbtnP() do
+        theSetP = calculatePressure(readSP(0), V_MIN, V_MAX)
+        if LJ.CheckInterval(0) then
+            local dispValue = string.format("%.3f", theSetP) .. " PSI"
+            UART_Transmit_ASCII("CLEAR_LCD", 0x27)
+            LJ.IntervalConfig(1, 100)
+            while LJ.CheckInterval(1) == 0 do end
+            UART_Transmit_ASCII(dispValue, 0x27)
+        end
+    end
+
+    local dispValue = string.format("%.3f", theSetP)
+    UART_Transmit_ASCII("CLEAR_LCD", 0x27)
+    LJ.IntervalConfig(1, 100)
+    while LJ.CheckInterval(1) == 0 do end
+    UART_Transmit_ASCII(dispValue, 0x27)
+    return theSetP
+end
+
+local function mainAP(setp)
+    local proc = readPP()
+    local V_MIN = 0.4
+    local V_MAX = 2.0
+    local PRESSURE_MIN = 0
+    local PRESSURE_MAX = 145
+    local THRESHOLD_PERCENT = 1 / 100
+
+    local function calculatePressure(voltage, v_min, v_max)
+        return ((voltage - v_min) / (v_max - v_min)) * (PRESSURE_MAX - PRESSURE_MIN)
+    end
+
+    LJ.IntervalConfig(1, 1000)
+    while LJ.CheckInterval(1) == 0 do end
+
+    local actualPressure = calculatePressure(proc, V_MIN, V_MAX)
+    local dialedPressure = setp
+    local difference = dialedPressure - actualPressure
+    local percentDifference = math.abs(difference) / dialedPressure
+    local isDiffCheck = percentDifference > THRESHOLD_PERCENT
+
+    if not isDiffCheck then
+        return true -- Return status when the condition is met
+    end
+
+    local isEqual = false
+
+    while not isEqual do
+        proc = readPP()
+        actualPressure = calculatePressure(proc, V_MIN, V_MAX)
+        difference = dialedPressure - actualPressure
+        percentDifference = math.abs(difference) / dialedPressure
+        isDiffCheck = percentDifference > THRESHOLD_PERCENT
+
+        if isDiffCheck then
+            if difference < 0 then
+                writeDigitalOutput(2008, 0)
+                writeDigitalOutput(2009, 0)
+            else
+                writeDigitalOutput(2009, 1)
+                writeDigitalOutput(2008, 1)
+            end
+
+            while isDiffCheck do
+                proc = readPP()
+                actualPressure = calculatePressure(proc, V_MIN, V_MAX)
+                difference = dialedPressure - actualPressure
+                percentDifference = math.abs(difference) / dialedPressure
+                isDiffCheck = percentDifference > THRESHOLD_PERCENT
+
+                if percentDifference <= THRESHOLD_PERCENT then
+                    isDiffCheck = false
+                end
+
+                LJ.IntervalConfig(2, 500)
+                while LJ.CheckInterval(2) == 0 do end
+            end
+        end
+
+        if not isDiffCheck then
+            writeDigitalOutput(2008, 1)
+            writeDigitalOutput(2009, 0)
+            LJ.IntervalConfig(2, 1000)
+            while LJ.CheckInterval(2) == 0 do end
+            isEqual = true
+        end
+
+        LJ.IntervalConfig(2, 500)
+        while LJ.CheckInterval(2) == 0 do end
+    end
+
+    return true -- Return the status
+end
+
+local function sendToLCD(message, address)
+    UART_Transmit_ASCII("CLEAR_LCD", address)
+    LJ.IntervalConfig(1, 500)
+    while LJ.CheckInterval(1) == 0 do end
+
+    local part1, part2 = message:match("([^\n]*)\n?(.*)")
+
+    UART_Transmit_ASCII(part1, address)
+    LJ.IntervalConfig(1, 500)
+    while LJ.CheckInterval(1) == 0 do end
+
+    UART_Transmit_ASCII("SET_CURSOR_SECOND_LINE", address)
+    LJ.IntervalConfig(1, 500)
+    while LJ.CheckInterval(1) == 0 do end
+
+    UART_Transmit_ASCII(part2, address)
+end
+
+local pressurePrinted = false
+-- Modify handleTOFCalculation to recalculate actualPressure locally
+local function handleTOFCalculation()
+    sendToLCD("*READY TO FIRE*", 0x27)
+
+    local function simpleDelay(seconds)
+        local counter = 0
+        local maxCount = seconds * 100000
+        while counter < maxCount do
+            counter = counter + 1
+        end
+    end
+
+    MB.W(2011, 0, 1)
+    simpleDelay(3)
+
+    MB.W(2011, 0, 0)
+    simpleDelay(3)
+
+    local V_MIN = 0.4
+    local V_MAX = 2.0
+    local PRESSURE_MIN = 0
+    local PRESSURE_MAX = 145
+
+    local function calculatePressure(voltage, v_min, v_max)
+        return ((voltage - v_min) / (v_max - v_min)) * (PRESSURE_MAX - PRESSURE_MIN)
+    end
+
+    local actualPressure = calculatePressure(readPP(), V_MIN, V_MAX) -- Recalculate locally
+    local pressureString = string.format("%.3f", actualPressure) .. " PSI"
+
+    local active = true
+    while active do
+        local lnchBn = MB.R(2003, 0)
+        if (lnchBn == 1) and not pressurePrinted then
+          LJ.IntervalConfig(1, 500)  -- 500ms delay
+          while LJ.CheckInterval(1) == 0 do end
+
+            UART_Transmit_ASCII(pressureString, 0x27)
+            pressurePrinted = true
+
+        end
+
+        local tof = MB.R(3000, 1)
+        if tof ~= 0 then
+            local tof_value = tof * 0.0000000125
+            local speed = 0.050 / tof_value
+            local message = "TOF=" .. string.format("%.9f", tof_value) .. "\nSPD=" .. string.format("%.9f", speed)
+
+            sendToLCD(message, 0x20)
+
+            active = false
+        end
+        LJ.IntervalConfig(2, 200)
+        while LJ.CheckInterval(2) == 0 do end
+    end
+
+    if timeout() then
+        writeDigitalOutput(2011, 0)
+    end
+end
+
+local function storeInitialProcessPressure()
+    if not fbtnP() then
+        e = readPP()
+    end
+end
+
+while true do
+    while not rstT() do
+        LJ.IntervalConfig(1, 1000)
+        while LJ.CheckInterval(1) == 0 do end
+    end
+
+    LJ.IntervalConfig(5, 500)
+    while LJ.CheckInterval(5) == 0 do end
+
+    MB.W(2013, 0, 0)
+
+    a = false
+    b = false
+    c = false
+    d = false
+    e = 0
+    f = nil
+
+    while not timeout() do
+        if isReadyToFire() then
+            local theSetP = userSetsP() -- Get the setpoint from userSetsP
+            local mainAP_status = mainAP(theSetP) -- Only check status
+            if mainAP_status then
+                LJ.IntervalConfig(5, 500)
+                while LJ.CheckInterval(5) == 0 do end
+                safetyCheck()
+                handleTOFCalculation() -- Handle the TOF calculation
+                break
+            end
+        end
+    end
+
+    writeDigitalOutput(2008, 0)
+    writeDigitalOutput(2009, 0)
+    writeDigitalOutput(2013, 0)
+    LJ.IntervalConfig(4, 2000)
+    while LJ.CheckInterval(4) == 0 do end
+    collectgarbage()
+end

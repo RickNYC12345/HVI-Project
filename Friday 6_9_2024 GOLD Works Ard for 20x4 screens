@@ -1,0 +1,52 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Initialize both LCDs with their respective addresses
+LiquidCrystal_I2C lcd1(0x27, 20, 4);
+LiquidCrystal_I2C lcd2(0x20, 20, 4);
+
+void setup() {
+  Serial.begin(9600); // Start serial communication at 9600 baud
+  lcd1.init(); // Initialize the first LCD
+  lcd1.backlight(); // Turn on the backlight for the first LCD
+  lcd1.setCursor(0, 0); // Set the cursor to the first column and first row
+  lcd1.print("Ready");
+
+  lcd2.init(); // Initialize the second LCD
+  lcd2.backlight(); // Turn on the backlight for the second LCD
+  lcd2.setCursor(0, 0); // Set the cursor to the first column and first row
+  lcd2.print("Ready");
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    char startChar = Serial.read(); // Read the start character
+    if (startChar == '#') { // Check for the start delimiter
+      while (Serial.available() == 0) {} // Wait for the address byte
+      unsigned char address = Serial.read(); // Read the address byte
+      delay(10); // Short delay to allow the rest of the message to arrive
+      if (Serial.available() > 0) {
+        String received = Serial.readStringUntil('\n'); // Read the incoming data until newline character
+
+        // Debugging prints
+        Serial.print("Received address: 0x");
+        Serial.println(address, HEX);
+        Serial.print("Received message: ");
+        Serial.println(received);
+
+        // Set the correct LCD based on address
+        LiquidCrystal_I2C* lcd = (address == 0x27) ? &lcd1 : (address == 0x20) ? &lcd2 : nullptr;
+
+        if (lcd != nullptr) {
+          if (received == "SET_CURSOR_SECOND_LINE") {
+            lcd->setCursor(0, 1); // Move the cursor to the second line
+          } else if (received == "CLEAR_LCD") {
+            lcd->clear(); // Clear the LCD screen
+          } else {
+            lcd->print(received); // Print the received string on the LCD
+          }
+        }
+      }
+    }
+  }
+}
